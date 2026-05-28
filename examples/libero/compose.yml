@@ -16,6 +16,8 @@ services:
       - $PWD:/app
       - ../../data:/data
       - /tmp/.X11-unix:/tmp/.X11-unix:ro
+      - /data/gy/pi05/checkpoints:/app/checkpoints:ro
+      - /data/gy/pi05/data:/data
     environment:
       - CLIENT_ARGS
       - DISPLAY=$DISPLAY
@@ -23,6 +25,8 @@ services:
       - MUJOCO_EGL_DEVICE_ID=0
       - NVIDIA_DRIVER_CAPABILITIES=all
       - PYOPENGL_PLATFORM=egl
+      - GIT_LFS_SKIP_SMUDGE=1
+      - GIT_CONFIG_GLOBAL_lfs_skipdownloaderrors=true
     deploy:
       resources:
         reservations:
@@ -42,6 +46,7 @@ services:
     volumes:
       - $PWD:/app
       - ${OPENPI_DATA_HOME:-~/.cache/openpi}:/openpi_assets
+      - /data/gy/pi05/checkpoints:/app/checkpoints:ro
     environment:
       - SERVER_ARGS
       - OPENPI_DATA_HOME=/openpi_assets

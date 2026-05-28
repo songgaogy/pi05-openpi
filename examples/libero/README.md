@@ -16,6 +16,10 @@ git submodule update --init --recursive
 # Grant access to the X11 server:
 sudo xhost +local:docker
 
+# If Docker build cannot reach GitHub, use the default mirrors (or vendor deps first):
+#   scripts/docker/vendor_git_deps.sh
+#   GIT_MIRROR=https://ghfast.top/https://github.com UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+
 # To run with the default checkpoint and task suite:
 SERVER_ARGS="--env LIBERO" docker compose -f examples/libero/compose.yml up --build
 
