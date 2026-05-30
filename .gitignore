@@ -1,4 +1,6 @@
-# Data directories.
+# Data directories (local symlinks; do not commit).
+/checkpoints
+/data
 assets/
 checkpoints/
 data/
