@@ -25,6 +25,12 @@ fi
 
 CHECKPOINT_DIR="$(cd "${CHECKPOINT_DIR}" && pwd)"
 
+# OpenPI expects the step directory (e.g. .../10000), not .../10000/params.
+if [[ -f "${CHECKPOINT_DIR}/_METADATA" && -d "${CHECKPOINT_DIR}/../assets" ]]; then
+    echo "[openpi] CHECKPOINT_DIR points at params/; using parent step directory instead" >&2
+    CHECKPOINT_DIR="$(cd "${CHECKPOINT_DIR}/.." && pwd)"
+fi
+
 # Real-time chunking (RTC) is opt-in. Set RTC_ENABLE=1 to wrap the policy with server-side RTC.
 RTC_ENABLE="${RTC_ENABLE:-0}"
 RTC_EXECUTE_HORIZON="${RTC_EXECUTE_HORIZON:-25}"

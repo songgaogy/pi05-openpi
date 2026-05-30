@@ -8,7 +8,7 @@ Use a separate terminal and the OpenPI environment. The checkpoint path is requi
 
 ```bash
 cd ~/A5
-CHECKPOINT_DIR=/absolute/path/to/checkpoint \
+CHECKPOINT_DIR=/absolute/path/to/checkpoint/10000 \
   bash policy/pi05-openpi/pipeline/scripts/serve_openpi.sh
 ```
 
@@ -26,7 +26,7 @@ Environment overrides:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CHECKPOINT_DIR` | required | OpenPI checkpoint directory |
+| `CHECKPOINT_DIR` | required | OpenPI step directory (e.g. `.../10000`, not `.../10000/params`) |
 | `OPENPI_ROOT` | `policy/pi05-openpi` | OpenPI checkout |
 | `OPENPI_CONFIG` | `pi05_arx_finetune_single_task` | OpenPI training config |
 | `OPENPI_PORT` | `8000` | Policy server port |
