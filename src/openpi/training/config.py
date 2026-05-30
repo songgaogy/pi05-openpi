@@ -18,6 +18,7 @@ import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
+import openpi.policies.arx_policy as arx_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
@@ -349,6 +350,56 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         # We return all data transforms for training and inference. No need to change anything here.
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotArxDataConfig(DataConfigFactory):
+    """
+    Data config for ARX A5 LeRobot datasets converted by pipeline/align_training_data.py.
+
+    The dataset stores 14D absolute joint-position actions:
+    left_joint_pos[6], left_gripper_pos[1], right_joint_pos[6], right_gripper_pos[1].
+    Joint dimensions are converted to delta actions for pi0/pi05 training, while gripper
+    dimensions stay absolute.
+    """
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "image",
+                        "observation/wrist_image": "wrist_image",
+                        "observation/right_wrist_image": "right_wrist_image",
+                        "observation/state": "state",
+                        "actions": "actions",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[arx_policy.ArxInputs(model_type=model_config.model_type)],
+            outputs=[arx_policy.ArxOutputs()],
+        )
+
+        delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
+        data_transforms = data_transforms.push(
+            inputs=[_transforms.DeltaActions(delta_action_mask)],
+            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        )
+
+        model_transforms = ModelTransformFactory()(model_config)
+        base_config = dataclasses.replace(self.create_base_config(assets_dirs, model_config), prompt_from_task=True)
+
+        return dataclasses.replace(
+            base_config,
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
@@ -916,6 +967,35 @@ _CONFIGS = [
         num_train_steps=20_000,
         batch_size=32,
     ),
+
+    # ----------------------------------------
+    # Arx configs.
+    # ----------------------------------------
+    TrainConfig(
+        name="pi05_arx_finetune_single_task",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,  # Keep pi05 base checkpoint shape; ARX 14D state/actions are padded to 32D.
+            action_horizon=50,
+        ),
+        data=LeRobotArxDataConfig(
+            repo_id="arx_a5/put_shrimp_in_pot_openpi",
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("checkpoints/pi05_base/params"),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=20000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        num_train_steps=20_000,
+        batch_size=32,
+        log_interval=100,
+        save_interval=2500,
+    ),
+
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
     #
