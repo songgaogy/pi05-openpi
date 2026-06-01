@@ -17,6 +17,7 @@ The wrapper runs the official command:
 ```bash
 uv run scripts/serve_policy.py \
   --port=8000 \
+  --warmup=ARX \
   policy:checkpoint \
   --policy.config=pi05_arx_finetune_single_task \
   --policy.dir=/absolute/path/to/checkpoint
@@ -30,10 +31,15 @@ Environment overrides:
 | `OPENPI_ROOT` | `policy/pi05-openpi` | OpenPI checkout |
 | `OPENPI_CONFIG` | `pi05_arx_finetune_single_task` | OpenPI training config |
 | `OPENPI_PORT` | `8000` | Policy server port |
+| `OPENPI_WARMUP` | `1` | Run dummy ARX inference until latency stabilizes before opening the WebSocket port |
 
 The official server binds `0.0.0.0`. In the current same-host deployment, the robot client connects to `ws://localhost:8000`.
 
 To enable Real-Time Chunking (smoother chunk transitions / async-latency robustness), set `RTC_ENABLE=1` plus the `RTC_*` variables. See [RTC implementation & usage detail and protocol](#rtcreal-time-chunking-implementation--usage-detail-and-protocol).
+
+The launcher warms up JAX inference before the WebSocket server starts listening. For RTC this compiles both the first
+vanilla chunk and subsequent RTC chunk paths, then resets server-side policy state. Set `OPENPI_WARMUP=0` only when
+startup latency matters more than the first robot action latency.
 
 ## Start the robot client
 
@@ -135,12 +141,14 @@ WebsocketPolicyServer  --reset() on new connection-->  clears stored chunk
         |
         v
 RealtimePolicy (openpi/policies/policy.py)
-   - first call:   vanilla sample_actions, store chunk (model space)
-   - later calls:  prev_shifted = concat(prev[:, E:], zeros[:, :E])
+   - first call:   vanilla sample_actions, store returned output-space chunk
+   - later calls:  prev_model = input_transform(prev_output, current_obs)
+                   prev_shifted = concat(prev_model[:, E:], zeros[:, :E])
                    actions = model.sample_actions_rtc(
                        obs, prev_shifted, inference_delay=d,
                        prefix_attention_horizon=50-E, method=...)
-                   store actions
+                   hard mode: restore actions[:, :d] from prev_shifted[:, :d]
+                   store returned output-space chunk
         | full 50-action chunk
         v
 robot client executes first E actions, then re-requests
@@ -148,11 +156,12 @@ robot client executes first E actions, then re-requests
 
 Key protocol points:
 
-1. **Stateful server.** The previously generated chunk is kept on the server in *model (normalized) space*, because `sample_actions_rtc` operates before the output/unnormalize transforms.
-2. **Alignment by shifting.** Each new call shifts the stored chunk by `execute_horizon` so index `0` aligns with the first action to generate. This assumes the client executed exactly `E` actions since the last call — hence `--actions-per-chunk == RTC_EXECUTE_HORIZON`.
+1. **Stateful server.** The previously returned output-space chunk is kept on the server. Before RTC conditioning, the input transforms encode it back into model space relative to the latest observation. This is required for policies such as ARX that model delta actions relative to the current state.
+2. **Alignment by shifting.** Each new call shifts the re-encoded chunk by `execute_horizon` so index `0` aligns with the first action to generate. This assumes the client executed exactly `E` actions since the last call — hence `--actions-per-chunk == RTC_EXECUTE_HORIZON`.
 3. **Episode reset.** `WebsocketPolicyServer` calls `policy.reset()` on every new connection, clearing the stored chunk. Start a new connection per episode (or call `reset()`) so RTC does not carry stale history across rollouts.
 4. **First call.** With no history, the first inference falls back to plain sampling; conditioning starts from the second chunk.
 5. **No wire-protocol change.** The obs/response msgpack payloads are unchanged; all RTC state lives server-side. The only client-side requirement is the `--actions-per-chunk` value.
+6. **Synchronous-client hard prefix.** Training-time RTC masks prefix loss, so the sampler's final prefix values are not executable predictions. Since the current robot client executes the returned chunk from index `0`, the server restores the known clean prefix before returning and caching a hard-RTC chunk.
 
 ## Training-time RTC (the `hard` method)
 

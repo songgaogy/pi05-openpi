@@ -5,8 +5,13 @@ import socket
 
 import tyro
 
+from openpi.policies import aloha_policy
+from openpi.policies import arx_policy
+from openpi.policies import droid_policy
+from openpi.policies import libero_policy
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
+from openpi.serving import policy_warmup
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
 
@@ -16,6 +21,15 @@ class EnvMode(enum.Enum):
 
     ALOHA = "aloha"
     ALOHA_SIM = "aloha_sim"
+    DROID = "droid"
+    LIBERO = "libero"
+
+
+class WarmupMode(enum.Enum):
+    """Dummy observation format used to compile inference before accepting client traffic."""
+
+    ALOHA = "aloha"
+    ARX = "arx"
     DROID = "droid"
     LIBERO = "libero"
 
@@ -64,6 +78,8 @@ class Args:
     port: int = 8000
     # Record the policy's behavior for debugging.
     record: bool = False
+    # If provided, run dummy inferences before opening the WebSocket server so JAX compilation is not paid by the robot.
+    warmup: WarmupMode | None = None
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
@@ -127,9 +143,25 @@ def create_policy(args: Args) -> _policy.Policy:
             return create_default_policy(args.env, default_prompt=args.default_prompt)
 
 
+def make_warmup_observation(mode: WarmupMode) -> dict:
+    match mode:
+        case WarmupMode.ALOHA:
+            return aloha_policy.make_aloha_example()
+        case WarmupMode.ARX:
+            return arx_policy.make_arx_example()
+        case WarmupMode.DROID:
+            return droid_policy.make_droid_example()
+        case WarmupMode.LIBERO:
+            return libero_policy.make_libero_example()
+
+
 def main(args: Args) -> None:
     policy = create_policy(args)
     policy_metadata = policy.metadata
+
+    if args.warmup is not None:
+        logging.info("Warming up policy with %s dummy observations before serving traffic", args.warmup.value)
+        policy_warmup.warm_up_policy(policy, make_warmup_observation(args.warmup))
 
     # Record the policy's behavior.
     if args.record:
