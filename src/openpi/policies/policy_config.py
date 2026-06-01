@@ -1,7 +1,8 @@
+import dataclasses
 import logging
 import os
 import pathlib
-from typing import Any
+from typing import Any, Literal
 
 import jax.numpy as jnp
 
@@ -13,6 +14,20 @@ from openpi.training import config as _config
 import openpi.transforms as transforms
 
 
+@dataclasses.dataclass(frozen=True)
+class RealtimeConfig:
+    """Server-side real-time chunking (RTC) settings. See `openpi.policies.policy.RealtimePolicy`."""
+
+    # Number of actions the client executes between inference calls; should match the client's actions-per-chunk.
+    execute_horizon: int
+    # Number of leading actions that are already committed (frozen) while a new chunk is being computed.
+    inference_delay: int = 0
+    # "auto" selects "hard" if the model was trained with simulated delay, otherwise "pinv".
+    method: Literal["auto", "none", "pinv", "hard"] = "auto"
+    prefix_attention_schedule: Literal["linear", "exp", "ones", "zeros"] = "exp"
+    max_guidance_weight: float = 5.0
+
+
 def create_trained_policy(
     train_config: _config.TrainConfig,
     checkpoint_dir: pathlib.Path | str,
@@ -22,6 +37,7 @@ def create_trained_policy(
     default_prompt: str | None = None,
     norm_stats: dict[str, transforms.NormStats] | None = None,
     pytorch_device: str | None = None,
+    realtime: RealtimeConfig | None = None,
 ) -> _policy.Policy:
     """Create a policy from a trained checkpoint.
 
@@ -72,8 +88,7 @@ def create_trained_policy(
         except ImportError:
             pytorch_device = "cpu"
 
-    return _policy.Policy(
-        model,
+    common_kwargs = dict(
         transforms=[
             *repack_transforms.inputs,
             transforms.InjectDefaultPrompt(default_prompt),
@@ -89,6 +104,35 @@ def create_trained_policy(
         ],
         sample_kwargs=sample_kwargs,
         metadata=train_config.policy_metadata,
+    )
+
+    if realtime is not None:
+        if is_pytorch:
+            raise ValueError("Real-time chunking is only supported for JAX models.")
+        method = realtime.method
+        if method == "auto":
+            # Pair the inference method with how the model was trained.
+            simulated_delay = getattr(train_config.model, "rtc_simulated_delay", None)
+            method = "hard" if simulated_delay is not None else "pinv"
+        logging.info(
+            "Enabling real-time chunking: method=%s, execute_horizon=%d, inference_delay=%d",
+            method,
+            realtime.execute_horizon,
+            realtime.inference_delay,
+        )
+        return _policy.RealtimePolicy(
+            model,
+            execute_horizon=realtime.execute_horizon,
+            inference_delay=realtime.inference_delay,
+            method=method,
+            prefix_attention_schedule=realtime.prefix_attention_schedule,
+            max_guidance_weight=realtime.max_guidance_weight,
+            **common_kwargs,
+        )
+
+    return _policy.Policy(
+        model,
         is_pytorch=is_pytorch,
         pytorch_device=pytorch_device if is_pytorch else None,
+        **common_kwargs,
     )

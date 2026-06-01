@@ -110,6 +110,109 @@ class Policy(BasePolicy):
         return self._metadata
 
 
+class RealtimePolicy(Policy):
+    """Stateful policy wrapper that runs Real-Time Chunking (RTC) inference.
+
+    The server keeps the previously generated (model-space, i.e. normalized) action chunk. On each subsequent inference
+    it shifts that chunk by `execute_horizon` (the number of actions the client is assumed to have executed since the
+    last call) and conditions the new chunk on it via `model.sample_actions_rtc`, producing smooth chunk transitions.
+
+    This assumes the client requests a new chunk every `execute_horizon` steps (e.g. via the action-chunk broker), so
+    the server's `execute_horizon` should match the client's actions-per-chunk. RTC is JAX-only.
+    """
+
+    def __init__(
+        self,
+        model: _model.BaseModel,
+        *,
+        execute_horizon: int,
+        inference_delay: int = 0,
+        method: str = "pinv",
+        prefix_attention_schedule: str = "exp",
+        max_guidance_weight: float = 5.0,
+        **kwargs: Any,
+    ):
+        super().__init__(model, **kwargs)
+        if self._is_pytorch_model:
+            raise ValueError("RealtimePolicy only supports JAX models.")
+        if not hasattr(model, "sample_actions_rtc"):
+            raise ValueError(f"Model {type(model).__name__} does not support real-time chunking (sample_actions_rtc).")
+
+        self._action_horizon = int(model.action_horizon)
+        if not 0 < execute_horizon <= self._action_horizon:
+            raise ValueError(f"execute_horizon must be in (0, {self._action_horizon}], got {execute_horizon}")
+        if not 0 <= inference_delay <= execute_horizon:
+            raise ValueError(f"inference_delay must be in [0, execute_horizon={execute_horizon}], got {inference_delay}")
+
+        self._execute_horizon = execute_horizon
+        self._inference_delay = inference_delay
+        self._prefix_attention_horizon = self._action_horizon - execute_horizon
+        self._method = method
+        self._prefix_attention_schedule = prefix_attention_schedule
+        self._max_guidance_weight = float(max_guidance_weight)
+
+        self._sample_actions_rtc = nnx_utils.module_jit(
+            model.sample_actions_rtc,
+            static_argnames=("num_steps", "method", "prefix_attention_schedule"),
+        )
+        # Previously generated chunk in model space, shape [1, action_horizon, action_dim], or None on the first call.
+        self._prev_chunk: jnp.ndarray | None = None
+
+    @override
+    def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
+        inputs = jax.tree.map(lambda x: x, obs)
+        inputs = self._input_transform(inputs)
+        inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
+        self._rng, sample_rng = jax.random.split(self._rng)
+
+        sample_kwargs = dict(self._sample_kwargs)
+        if noise is not None:
+            noise_arr = jnp.asarray(noise)
+            if noise_arr.ndim == 2:
+                noise_arr = noise_arr[None, ...]
+            sample_kwargs["noise"] = noise_arr
+
+        observation = _model.Observation.from_dict(inputs)
+        start_time = time.monotonic()
+        if self._prev_chunk is None or self._method == "none":
+            # First call (no history) falls back to vanilla sampling; RTC needs a previous chunk to condition on.
+            actions = self._sample_actions(sample_rng, observation, **sample_kwargs)
+        else:
+            # Shift the stored chunk so index 0 aligns with the first action this call will generate.
+            prev = jnp.concatenate(
+                [
+                    self._prev_chunk[:, self._execute_horizon :],
+                    jnp.zeros_like(self._prev_chunk[:, : self._execute_horizon]),
+                ],
+                axis=1,
+            )
+            actions = self._sample_actions_rtc(
+                sample_rng,
+                observation,
+                prev,
+                self._inference_delay,
+                self._prefix_attention_horizon,
+                method=self._method,
+                prefix_attention_schedule=self._prefix_attention_schedule,
+                max_guidance_weight=self._max_guidance_weight,
+                **sample_kwargs,
+            )
+        model_time = time.monotonic() - start_time
+
+        # Keep the model-space chunk for the next call (RTC operates in normalized model space, before output transforms).
+        self._prev_chunk = actions
+
+        outputs = {"state": inputs["state"], "actions": actions}
+        outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
+        outputs = self._output_transform(outputs)
+        outputs["policy_timing"] = {"infer_ms": model_time * 1000}
+        return outputs
+
+    @override
+    def reset(self) -> None:
+        self._prev_chunk = None
+
+
 class PolicyRecorder(_base_policy.BasePolicy):
     """Records the policy's behavior to disk."""
 

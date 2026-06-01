@@ -36,6 +36,20 @@ class Default:
 
 
 @dataclasses.dataclass
+class Realtime:
+    """Enable server-side real-time chunking (RTC). See openpi.policies.policy.RealtimePolicy."""
+
+    # Number of actions the client executes between inference calls; should match the client's actions-per-chunk.
+    execute_horizon: int = 25
+    # Number of leading actions that are already committed (frozen) while a new chunk is computed.
+    inference_delay: int = 1
+    # "auto" picks "hard" if the model was trained with simulated delay, otherwise "pinv".
+    method: str = "auto"
+    prefix_attention_schedule: str = "exp"
+    max_guidance_weight: float = 5.0
+
+
+@dataclasses.dataclass
 class Args:
     """Arguments for the serve_policy script."""
 
@@ -53,6 +67,9 @@ class Args:
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
+
+    # If provided, wraps the policy to run real-time chunking. Only supported for JAX checkpoints.
+    realtime: Realtime | None = None
 
 
 # Default checkpoints that should be used for each environment.
@@ -87,12 +104,26 @@ def create_default_policy(env: EnvMode, *, default_prompt: str | None = None) ->
 
 def create_policy(args: Args) -> _policy.Policy:
     """Create a policy from the given arguments."""
+    realtime = None
+    if args.realtime is not None:
+        realtime = _policy_config.RealtimeConfig(
+            execute_horizon=args.realtime.execute_horizon,
+            inference_delay=args.realtime.inference_delay,
+            method=args.realtime.method,  # type: ignore[arg-type]
+            prefix_attention_schedule=args.realtime.prefix_attention_schedule,  # type: ignore[arg-type]
+            max_guidance_weight=args.realtime.max_guidance_weight,
+        )
     match args.policy:
         case Checkpoint():
             return _policy_config.create_trained_policy(
-                _config.get_config(args.policy.config), args.policy.dir, default_prompt=args.default_prompt
+                _config.get_config(args.policy.config),
+                args.policy.dir,
+                default_prompt=args.default_prompt,
+                realtime=realtime,
             )
         case Default():
+            if realtime is not None:
+                raise ValueError("Real-time chunking requires an explicit checkpoint (policy:checkpoint).")
             return create_default_policy(args.env, default_prompt=args.default_prompt)
 
 

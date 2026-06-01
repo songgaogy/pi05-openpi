@@ -49,6 +49,10 @@ class WebsocketPolicyServer:
         logger.info(f"Connection from {websocket.remote_address} opened")
         packer = msgpack_numpy.Packer()
 
+        # Reset any per-episode policy state (e.g. the previous action chunk used by real-time chunking) so that a new
+        # connection starts a fresh rollout. No-op for stateless policies.
+        self._policy.reset()
+
         await websocket.send(packer.pack(self._metadata))
 
         prev_total_time = None

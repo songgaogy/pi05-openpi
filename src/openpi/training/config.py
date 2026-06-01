@@ -996,6 +996,35 @@ _CONFIGS = [
         save_interval=2500,
     ),
 
+    # ----------------------------------------
+    # Arx configs for RTC
+    # ----------------------------------------
+    TrainConfig(
+        name="pi05_arx_finetune_single_task_rtc",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,  # Keep pi05 base checkpoint shape; ARX 14D state/actions are padded to 32D.
+            action_horizon=50,
+            rtc_simulated_delay=5,     # delay=80ms, num_chunk=0.08/(1/30)=2.4
+        ),
+        data=LeRobotArxDataConfig(
+            repo_id="arx_a5/put_shrimp_in_pot_openpi",
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("checkpoints/pi05_base/params"),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=20000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        num_train_steps=20_000,
+        batch_size=32,
+        log_interval=100,
+        save_interval=2500,
+    ),
+
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
     #

@@ -5,6 +5,8 @@ will compute the mean and standard deviation of the data in the dataset and save
 to the config assets directory.
 """
 
+import dataclasses
+
 import numpy as np
 import tqdm
 import tyro
@@ -86,17 +88,42 @@ def create_rlds_dataloader(
     return data_loader, num_batches
 
 
-def main(config_name: str, max_frames: int | None = None):
+@dataclasses.dataclass
+class _DataOverride:
+    # Optional override for `TrainConfig.data.repo_id` (same flag as `train.py --data.repo-id`).
+    repo_id: str | None = None
+
+
+@dataclasses.dataclass
+class Args:
+    config_name: str
+    data: _DataOverride = dataclasses.field(default_factory=_DataOverride)
+    max_frames: int | None = None
+
+
+def _resolve_config(config_name: str, repo_id_override: str | None) -> _config.TrainConfig:
     config = _config.get_config(config_name)
+    if repo_id_override is None:
+        return config
+    return dataclasses.replace(config, data=dataclasses.replace(config.data, repo_id=repo_id_override))
+
+
+def main(args: Args) -> None:
+    config = _resolve_config(args.config_name, args.data.repo_id)
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:
         data_loader, num_batches = create_rlds_dataloader(
-            data_config, config.model.action_horizon, config.batch_size, max_frames
+            data_config, config.model.action_horizon, config.batch_size, args.max_frames
         )
     else:
         data_loader, num_batches = create_torch_dataloader(
-            data_config, config.model.action_horizon, config.batch_size, config.model, config.num_workers, max_frames
+            data_config,
+            config.model.action_horizon,
+            config.batch_size,
+            config.model,
+            config.num_workers,
+            args.max_frames,
         )
 
     keys = ["state", "actions"]
@@ -114,4 +141,4 @@ def main(config_name: str, max_frames: int | None = None):
 
 
 if __name__ == "__main__":
-    tyro.cli(main)
+    main(tyro.cli(Args))

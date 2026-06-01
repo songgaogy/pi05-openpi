@@ -170,3 +170,4 @@ cython_debug/
 #.idea/
 
 third_party/lerobot/
+third_party/real-time-chunking-kinetix

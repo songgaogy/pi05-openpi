@@ -25,14 +25,38 @@ fi
 
 CHECKPOINT_DIR="$(cd "${CHECKPOINT_DIR}" && pwd)"
 
+# Real-time chunking (RTC) is opt-in. Set RTC_ENABLE=1 to wrap the policy with server-side RTC.
+RTC_ENABLE="${RTC_ENABLE:-0}"
+RTC_EXECUTE_HORIZON="${RTC_EXECUTE_HORIZON:-25}"
+RTC_INFERENCE_DELAY="${RTC_INFERENCE_DELAY:-1}"
+RTC_METHOD="${RTC_METHOD:-auto}"
+RTC_PREFIX_ATTENTION_SCHEDULE="${RTC_PREFIX_ATTENTION_SCHEDULE:-exp}"
+RTC_MAX_GUIDANCE_WEIGHT="${RTC_MAX_GUIDANCE_WEIGHT:-5.0}"
+
 echo "[openpi] root=${OPENPI_ROOT}"
 echo "[openpi] checkpoint=${CHECKPOINT_DIR}"
 echo "[openpi] config=${OPENPI_CONFIG}"
 echo "[openpi] bind=ws://0.0.0.0:${OPENPI_PORT}"
+echo "[openpi] rtc_enable=${RTC_ENABLE}"
+
+# tyro parses the optional `realtime` config as a subcommand that must follow the `policy:checkpoint` subcommand.
+RTC_ARGS=()
+if [[ "${RTC_ENABLE}" != "0" ]]; then
+    echo "[openpi] rtc execute_horizon=${RTC_EXECUTE_HORIZON} inference_delay=${RTC_INFERENCE_DELAY} method=${RTC_METHOD}"
+    RTC_ARGS=(
+        realtime:realtime
+        --realtime.execute-horizon="${RTC_EXECUTE_HORIZON}"
+        --realtime.inference-delay="${RTC_INFERENCE_DELAY}"
+        --realtime.method="${RTC_METHOD}"
+        --realtime.prefix-attention-schedule="${RTC_PREFIX_ATTENTION_SCHEDULE}"
+        --realtime.max-guidance-weight="${RTC_MAX_GUIDANCE_WEIGHT}"
+    )
+fi
 
 cd "${OPENPI_ROOT}"
 exec uv run scripts/serve_policy.py \
     --port="${OPENPI_PORT}" \
     policy:checkpoint \
     --policy.config="${OPENPI_CONFIG}" \
-    --policy.dir="${CHECKPOINT_DIR}"
+    --policy.dir="${CHECKPOINT_DIR}" \
+    "${RTC_ARGS[@]}"
