@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures as futures
 import dataclasses
 import logging
+import pathlib
 from typing import Protocol
 
 from etils import epath
@@ -107,10 +108,23 @@ def restore_state(
     return _merge_params(restored["train_state"], restored["params"])
 
 
-def load_norm_stats(assets_dir: epath.Path | str, asset_id: str) -> dict[str, _normalize.NormStats] | None:
-    norm_stats_dir = epath.Path(assets_dir) / asset_id
-    norm_stats = _normalize.load(norm_stats_dir)
-    logging.info(f"Loaded norm stats from {norm_stats_dir}")
+def load_norm_stats(assets_dir: epath.Path | str | pathlib.Path) -> dict[str, _normalize.NormStats]:
+    """Load norm stats from the single norm_stats.json under a checkpoint assets directory."""
+    # Checkpoints are always local; use pathlib so recursive search works (epath rglob rejects `**`).
+    assets_dir = pathlib.Path(str(assets_dir))
+    if not assets_dir.is_dir():
+        raise FileNotFoundError(f"Assets directory not found: {assets_dir}")
+
+    matches = sorted(assets_dir.rglob("norm_stats.json"))
+    if not matches:
+        raise FileNotFoundError(f"No norm_stats.json found under: {assets_dir}")
+    if len(matches) > 1:
+        paths = "\n  ".join(str(path) for path in matches)
+        raise ValueError(f"Multiple norm_stats.json files found under {assets_dir}:\n  {paths}")
+
+    norm_stats_path = matches[0]
+    norm_stats = _normalize.deserialize_json(norm_stats_path.read_text())
+    logging.info("Loading norm stats from %s (keys: %s)", norm_stats_path, sorted(norm_stats.keys()))
     return norm_stats
 
 
