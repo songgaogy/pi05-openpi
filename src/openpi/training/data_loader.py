@@ -127,8 +127,73 @@ class FakeDataset(Dataset):
         return self._num_samples
 
 
+def resolve_num_traj_count(repo_id: str, num_traj: int) -> int:
+    """Return the episode count used in norm-stats asset paths.
+
+    When num_traj is -1, returns the dataset's total episode count (not the literal -1).
+    """
+    if num_traj == -1:
+        return lerobot_dataset.LeRobotDatasetMetadata(repo_id).total_episodes
+    if num_traj < 1:
+        raise ValueError(f"num_traj must be -1 or >= 1, got {num_traj}")
+    total = lerobot_dataset.LeRobotDatasetMetadata(repo_id).total_episodes
+    if num_traj > total:
+        raise ValueError(f"num_traj ({num_traj}) exceeds dataset episodes ({total}) for repo '{repo_id}'")
+    return num_traj
+
+
+def norm_stats_asset_id(repo_id: str, num_traj: int, *, asset_id: str | None = None) -> str:
+    """Asset subdirectory name for norm stats, e.g. `my_dataset-50`."""
+    base = asset_id or repo_id
+    count = resolve_num_traj_count(repo_id, num_traj)
+    return f"{base}-{count}"
+
+
+def resolve_episode_indices(repo_id: str, num_traj: int, *, seed: int) -> list[int] | None:
+    """Resolve episode indices for a LeRobot dataset subset.
+
+    Returns None when num_traj is -1 (use all episodes).
+    """
+    if num_traj == -1:
+        return None
+    if num_traj < 1:
+        raise ValueError(f"num_traj must be -1 or >= 1, got {num_traj}")
+
+    count = resolve_num_traj_count(repo_id, num_traj)
+    total_episodes = lerobot_dataset.LeRobotDatasetMetadata(repo_id).total_episodes
+    rng = np.random.default_rng(seed)
+    indices = rng.choice(total_episodes, size=count, replace=False)
+    return sorted(int(i) for i in indices)
+
+
+class OpenPiLeRobotDataset(lerobot_dataset.LeRobotDataset):
+    """LeRobotDataset with fixed episode-index mapping for episode subsets.
+
+    When `episodes` is a strict subset, `episode_data_index` is indexed by position in the
+    subset (0..N-1), but `__getitem__` passes the global `episode_index` from parquet into
+    `_get_query_indices`. A runtime monkey-patch does not survive DataLoader worker pickling;
+    this subclass fixes indexing in a picklable way.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.episodes is not None:
+            self._episode_to_local = {int(ep): i for i, ep in enumerate(self.episodes)}
+        else:
+            self._episode_to_local = None
+
+    def _get_query_indices(self, idx: int, ep_idx: int):
+        if self._episode_to_local is not None:
+            ep_idx = self._episode_to_local[int(ep_idx)]
+        return super()._get_query_indices(idx, ep_idx)
+
+
 def create_torch_dataset(
-    data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
+    data_config: _config.DataConfig,
+    action_horizon: int,
+    model_config: _model.BaseModelConfig,
+    *,
+    seed: int = 0,
 ) -> Dataset:
     """Create a dataset for training."""
     repo_id = data_config.repo_id
@@ -138,8 +203,18 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
-    dataset = lerobot_dataset.LeRobotDataset(
+    episode_indices = resolve_episode_indices(repo_id, data_config.num_traj, seed=seed)
+    if episode_indices is None:
+        logging.info(f"Using all {dataset_meta.total_episodes} episodes from '{repo_id}'")
+    else:
+        preview = episode_indices if len(episode_indices) <= 10 else [*episode_indices[:10], "..."]
+        logging.info(
+            f"Using {len(episode_indices)}/{dataset_meta.total_episodes} episodes from '{repo_id}': {preview}"
+        )
+
+    dataset = OpenPiLeRobotDataset(
         data_config.repo_id,
+        episodes=episode_indices,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
@@ -299,7 +374,7 @@ def create_torch_data_loader(
             execute in the main process.
         seed: The seed to use for shuffling the data.
     """
-    dataset = create_torch_dataset(data_config, action_horizon, model_config)
+    dataset = create_torch_dataset(data_config, action_horizon, model_config, seed=seed)
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
 
     # Use TorchDataLoader for both frameworks

@@ -29,11 +29,13 @@ def create_torch_dataloader(
     batch_size: int,
     model_config: _model.BaseModelConfig,
     num_workers: int,
+    *,
+    seed: int = 0,
     max_frames: int | None = None,
 ) -> tuple[_data_loader.Dataset, int]:
     if data_config.repo_id is None:
         raise ValueError("Data config must have a repo_id")
-    dataset = _data_loader.create_torch_dataset(data_config, action_horizon, model_config)
+    dataset = _data_loader.create_torch_dataset(data_config, action_horizon, model_config, seed=seed)
     dataset = _data_loader.TransformedDataset(
         dataset,
         [
@@ -92,6 +94,8 @@ def create_rlds_dataloader(
 class _DataOverride:
     # Optional override for `TrainConfig.data.repo_id` (same flag as `train.py --data.repo-id`).
     repo_id: str | None = None
+    # Optional override for `TrainConfig.data.num_traj` (same flag as `train.py --data.num-traj`).
+    num_traj: int | None = None
 
 
 @dataclasses.dataclass
@@ -101,15 +105,29 @@ class Args:
     max_frames: int | None = None
 
 
-def _resolve_config(config_name: str, repo_id_override: str | None) -> _config.TrainConfig:
+def _resolve_config(
+    config_name: str,
+    *,
+    repo_id_override: str | None,
+    num_traj_override: int | None,
+) -> _config.TrainConfig:
     config = _config.get_config(config_name)
-    if repo_id_override is None:
+    data_overrides = {}
+    if repo_id_override is not None:
+        data_overrides["repo_id"] = repo_id_override
+    if num_traj_override is not None:
+        data_overrides["num_traj"] = num_traj_override
+    if not data_overrides:
         return config
-    return dataclasses.replace(config, data=dataclasses.replace(config.data, repo_id=repo_id_override))
+    return dataclasses.replace(config, data=dataclasses.replace(config.data, **data_overrides))
 
 
 def main(args: Args) -> None:
-    config = _resolve_config(args.config_name, args.data.repo_id)
+    config = _resolve_config(
+        args.config_name,
+        repo_id_override=args.data.repo_id,
+        num_traj_override=args.data.num_traj,
+    )
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:
@@ -123,7 +141,8 @@ def main(args: Args) -> None:
             config.batch_size,
             config.model,
             config.num_workers,
-            args.max_frames,
+            seed=config.seed,
+            max_frames=args.max_frames,
         )
 
     keys = ["state", "actions"]
@@ -135,7 +154,9 @@ def main(args: Args) -> None:
 
     norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
-    output_path = config.assets_dirs / data_config.repo_id
+    if data_config.asset_id is None:
+        raise ValueError("Data config must have an asset_id to save norm stats.")
+    output_path = config.assets_dirs / data_config.asset_id
     print(f"Writing stats to: {output_path}")
     normalize.save(output_path, norm_stats)
 

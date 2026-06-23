@@ -91,6 +91,9 @@ class DataConfig:
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
 
+    # Number of episodes to use for training. -1 uses all episodes; >0 randomly samples that many.
+    num_traj: int = -1
+
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
@@ -168,6 +171,8 @@ class ModelTransformFactory(GroupFactory):
 class DataConfigFactory(abc.ABC):
     # The LeRobot repo id.
     repo_id: str = tyro.MISSING
+    # Number of episodes to use for training. -1 uses all episodes; >0 randomly samples that many.
+    num_traj: int = -1
     # Determines how the assets will be loaded.
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
     # Base config that will be updated by the factory.
@@ -179,11 +184,20 @@ class DataConfigFactory(abc.ABC):
 
     def create_base_config(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
-        asset_id = self.assets.asset_id or repo_id
+        base_asset_id = self.assets.asset_id or repo_id
+        if repo_id is not None and repo_id != "fake":
+            from openpi.training import data_loader as _data_loader
+
+            asset_id = _data_loader.norm_stats_asset_id(
+                repo_id, self.num_traj, asset_id=self.assets.asset_id
+            )
+        else:
+            asset_id = base_asset_id
         return dataclasses.replace(
             self.base_config or DataConfig(),
             repo_id=repo_id,
             asset_id=asset_id,
+            num_traj=self.num_traj,
             norm_stats=self._load_norm_stats(epath.Path(self.assets.assets_dir or assets_dirs), asset_id),
             use_quantile_norm=model_config.model_type != ModelType.PI0,
         )

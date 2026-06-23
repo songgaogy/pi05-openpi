@@ -3,9 +3,10 @@ set -euo pipefail
 
 REPO_ROOT="/home/gy/Documents/pi05-openpi"
 CONFIG_NAME="pi05_arx_finetune_single_task_rtc"
-TASK_NAME="put_shrimp_in_pot"
-DATA_REPO_ID="arx_a5/put_shrimp_in_pot_openpi"
-EXP_NAME="${CONFIG_NAME}-${TASK_NAME}-$(date +%Y%m%d)_$(date +%H%M%S)-rtc"
+TASK_NAME="PenAssembly"
+DATA_REPO_ID="arx_a5/PenAssembly"        # repo_id defined in align_training_data.sh
+NUM_TRAJ=100     # Number of episodes to train on (-1 = use all episodes in the dataset).
+EXP_NAME="${TASK_NAME}-traj${NUM_TRAJ}-$(date +%Y%m%d)_$(date +%H%M%S)-rtc"
 
 export XLA_PYTHON_CLIENT_MEM_FRACTION=.9
 export CUDA_VISIBLE_DEVICES=0,1,2,3
@@ -17,10 +18,12 @@ cd "${REPO_ROOT}"
 # run this if repo_id/config_name is changed
 uv run scripts/compute_norm_stats.py \
     --config-name "${CONFIG_NAME}" \
-    --data.repo-id "${DATA_REPO_ID}"
+    --data.repo-id "${DATA_REPO_ID}" \
+    --data.num-traj="${NUM_TRAJ}"
 
 uv run scripts/train.py \
     "${CONFIG_NAME}" \
     --exp-name="${EXP_NAME}" \
     --overwrite \
-    --data.repo-id="${DATA_REPO_ID}"
+    --data.repo-id="${DATA_REPO_ID}" \
+    --data.num-traj="${NUM_TRAJ}"

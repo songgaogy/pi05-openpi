@@ -1,0 +1,5 @@
+arx_a5/type_c_insertion
+arx_a5/close_tool_box
+arx_a5/flip_egg
+arx_a5/put_shrimp_in_box_openpi
+arx_a5/PenAssembly
